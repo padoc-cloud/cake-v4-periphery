@@ -1,4 +1,4 @@
-# Pancake v4 periphery
+# Cake v4 periphery
 
 1. Setup mimic https://github.com/pancakeswap/pancake-v4-core
 
@@ -6,8 +6,6 @@
 
 1. Install dependencies with `forge install`
 2. Run test with `forge test --isolate`
-
-See https://github.com/pancakeswap/pancake-v4-core/pull/35 on why `--isolate` flag is used.
 
 ## Update dependencies
 
