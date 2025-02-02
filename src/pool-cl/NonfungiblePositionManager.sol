@@ -70,6 +70,7 @@ contract NonfungiblePositionManager is
         returns (
             uint96 nonce,
             address operator,
+            PoolId poolId,
             Currency currency0,
             Currency currency1,
             uint24 fee,
@@ -79,7 +80,8 @@ contract NonfungiblePositionManager is
             uint256 feeGrowthInside0LastX128,
             uint256 feeGrowthInside1LastX128,
             uint128 tokensOwed0,
-            uint128 tokensOwed1
+            uint128 tokensOwed1,
+            bytes32 salt
         )
     {
         Position memory position = _positions[tokenId];
@@ -88,6 +90,7 @@ contract NonfungiblePositionManager is
         return (
             position.nonce,
             position.operator,
+            position.poolId,
             poolKey.currency0,
             poolKey.currency1,
             poolKey.fee,
@@ -97,7 +100,8 @@ contract NonfungiblePositionManager is
             position.feeGrowthInside0LastX128,
             position.feeGrowthInside1LastX128,
             position.tokensOwed0,
-            position.tokensOwed1
+            position.tokensOwed1,
+            position.salt
         );
     }
 
@@ -109,6 +113,18 @@ contract NonfungiblePositionManager is
         returns (int24 tick)
     {
         (tick) = poolManager.initialize(poolKey, sqrtPriceX96, hookData);
+    }
+
+    /// @inheritdoc INonfungiblePositionManager
+    function modifyLiquidities(bytes calldata lockData, uint256 deadline)
+        external
+        payable
+        checkDeadline(deadline)
+        returns (bytes[] memory)
+    {
+        return abi.decode(
+            vault.lock(abi.encode(CallbackData(msg.sender, CallbackDataType.BatchModifyLiquidity, lockData))), (bytes[])
+        );
     }
 
     /// @inheritdoc INonfungiblePositionManager
@@ -202,20 +218,46 @@ contract NonfungiblePositionManager is
         }
 
         CallbackData memory data = abi.decode(rawData, (CallbackData));
+        if (data.callbackDataType == CallbackDataType.BatchModifyLiquidity) {
+            bytes[] memory params = abi.decode(data.params, (bytes[]));
+            return _dispatch(params, data.sender);
+        } else {
+            return _handleSingleAction(data, true);
+        }
+    }
+
+    function _dispatch(bytes[] memory params, address sender) internal returns (bytes memory returnDataArrayBytes) {
+        uint256 length = params.length;
+        bytes[] memory returnData = new bytes[](length);
+        // In order to save gas, we will set the settle flag to true if only one liquidity modification
+        bool shouldSettle = length == 1;
+        for (uint256 i; i < length; i++) {
+            CallbackData memory data = abi.decode(params[i], (CallbackData));
+            data.sender = sender;
+            // TODO:
+            returnData[i] = _handleSingleAction(data, shouldSettle);
+        }
+
+        return abi.encode(returnData);
+    }
+
+    function _handleSingleAction(CallbackData memory data, bool shouldSettle) internal returns (bytes memory) {
         if (data.callbackDataType == CallbackDataType.Mint) {
-            return _handleMint(data);
+            return _handleMint(data, shouldSettle);
         } else if (data.callbackDataType == CallbackDataType.IncreaseLiquidity) {
-            return _handleIncreaseLiquidity(data);
+            return _handleIncreaseLiquidity(data, shouldSettle);
         } else if (data.callbackDataType == CallbackDataType.DecreaseLiquidity) {
-            return _handleDecreaseLiquidity(data);
+            return _handleDecreaseLiquidity(data, shouldSettle);
         } else if (data.callbackDataType == CallbackDataType.Collect) {
-            return _handleCollect(data);
+            return _handleCollect(data, shouldSettle);
+        } else if (data.callbackDataType == CallbackDataType.CloseCurrency) {
+            return _close(data.params, data.sender);
         } else {
             revert InvalidCalldataType();
         }
     }
 
-    function _handleMint(CallbackData memory data) internal returns (bytes memory) {
+    function _handleMint(CallbackData memory data, bool shouldSettle) internal returns (bytes memory) {
         INonfungiblePositionManager.MintParams memory params =
             abi.decode(data.params, (INonfungiblePositionManager.MintParams));
 
@@ -224,6 +266,7 @@ contract NonfungiblePositionManager is
                 poolKey: params.poolKey,
                 tickLower: params.tickLower,
                 tickUpper: params.tickUpper,
+                salt: params.salt,
                 amount0Desired: params.amount0Desired,
                 amount1Desired: params.amount1Desired,
                 amount0Min: params.amount0Min,
@@ -234,8 +277,9 @@ contract NonfungiblePositionManager is
         uint256 tokenId = _nextId++;
         _mint(params.recipient, tokenId);
 
-        CLPosition.Info memory positionInfo =
-            poolManager.getPosition(params.poolKey.toId(), address(this), params.tickLower, params.tickUpper);
+        CLPosition.Info memory positionInfo = poolManager.getPosition(
+            params.poolKey.toId(), address(this), params.tickLower, params.tickUpper, params.salt
+        );
         _positions[tokenId] = Position({
             nonce: 0,
             operator: address(0),
@@ -246,31 +290,36 @@ contract NonfungiblePositionManager is
             feeGrowthInside0LastX128: positionInfo.feeGrowthInside0LastX128,
             feeGrowthInside1LastX128: positionInfo.feeGrowthInside1LastX128,
             tokensOwed0: 0,
-            tokensOwed1: 0
+            tokensOwed1: 0,
+            salt: params.salt
         });
         if (address(_poolIdToPoolKey[params.poolKey.toId()].poolManager) == address(0)) {
             _poolIdToPoolKey[params.poolKey.toId()] = params.poolKey;
         }
 
-        settleDeltas(data.sender, params.poolKey, delta);
+        if (shouldSettle) {
+            settleDeltas(data.sender, params.poolKey, delta);
+        }
 
-        return abi.encode(tokenId, liquidity, delta.amount0(), delta.amount1());
+        return abi.encode(tokenId, liquidity, -delta.amount0(), -delta.amount1());
     }
 
-    function _handleIncreaseLiquidity(CallbackData memory data) internal returns (bytes memory) {
+    function _handleIncreaseLiquidity(CallbackData memory data, bool shouldSettle) internal returns (bytes memory) {
         IncreaseLiquidityParams memory params = abi.decode(data.params, (IncreaseLiquidityParams));
         Position storage nftPosition = _positions[params.tokenId];
         PoolId poolId = nftPosition.poolId;
-        PoolKey memory poolKey = _poolIdToPoolKey[poolId];
         uint128 existingLiquility = nftPosition.liquidity;
         int24 tickLower = nftPosition.tickLower;
         int24 tickUpper = nftPosition.tickUpper;
+        bytes32 salt = nftPosition.salt;
+        PoolKey memory poolKey = _poolIdToPoolKey[poolId];
 
         (uint128 liquidity, BalanceDelta delta) = addLiquidity(
             AddLiquidityParams({
                 poolKey: poolKey,
                 tickLower: tickLower,
                 tickUpper: tickUpper,
+                salt: salt,
                 amount0Desired: params.amount0Desired,
                 amount1Desired: params.amount1Desired,
                 amount0Min: params.amount0Min,
@@ -279,7 +328,7 @@ contract NonfungiblePositionManager is
         );
 
         CLPosition.Info memory poolManagerPositionInfo =
-            poolManager.getPosition(poolId, address(this), tickLower, tickUpper);
+            poolManager.getPosition(poolId, address(this), tickLower, tickUpper, salt);
 
         /// @dev This can be overflow in following cases:
         /// 1. feeGrowthInside0LastX128 is overflow
@@ -311,19 +360,26 @@ contract NonfungiblePositionManager is
         nftPosition.feeGrowthInside1LastX128 = poolManagerPositionInfo.feeGrowthInside1LastX128;
         nftPosition.liquidity += liquidity;
 
-        settleDeltas(data.sender, poolKey, delta);
+        if (shouldSettle) {
+            settleDeltas(data.sender, poolKey, delta);
+        }
 
-        return abi.encode(liquidity, delta.amount0(), delta.amount1());
+        return abi.encode(liquidity, -delta.amount0(), -delta.amount1());
     }
 
-    function _handleDecreaseLiquidity(CallbackData memory data) internal returns (bytes memory) {
+    function _handleDecreaseLiquidity(CallbackData memory data, bool shouldSettle) internal returns (bytes memory) {
         DecreaseLiquidityParams memory params = abi.decode(data.params, (DecreaseLiquidityParams));
+        if (params.liquidity == 0) {
+            revert InvalidLiquidityDecreaseAmount();
+        }
+        // TODO: add isAuthorizedForToken check for modifyLiquidities
         Position storage nftPosition = _positions[params.tokenId];
         PoolId poolId = nftPosition.poolId;
-        PoolKey memory poolKey = _poolIdToPoolKey[poolId];
         uint128 liquidity = nftPosition.liquidity;
         int24 tickLower = nftPosition.tickLower;
         int24 tickUpper = nftPosition.tickUpper;
+        bytes32 salt = nftPosition.salt;
+        PoolKey memory poolKey = _poolIdToPoolKey[poolId];
 
         if (liquidity < params.liquidity) {
             revert InvalidLiquidityDecreaseAmount();
@@ -336,12 +392,13 @@ contract NonfungiblePositionManager is
                 tickUpper: tickUpper,
                 liquidity: params.liquidity,
                 amount0Min: params.amount0Min,
-                amount1Min: params.amount1Min
+                amount1Min: params.amount1Min,
+                salt: salt
             })
         );
 
         CLPosition.Info memory poolManagerPositionInfo =
-            poolManager.getPosition(poolId, address(this), tickLower, tickUpper);
+            poolManager.getPosition(poolId, address(this), tickLower, tickUpper, salt);
 
         /// @dev This can be overflow in following cases:
         /// 1. feeGrowthInside0LastX128 is overflow
@@ -376,26 +433,36 @@ contract NonfungiblePositionManager is
             nftPosition.liquidity -= params.liquidity;
         }
 
-        settleDeltas(data.sender, poolKey, delta);
+        if (shouldSettle) {
+            settleDeltas(data.sender, poolKey, delta);
+        }
 
-        return abi.encode(-delta.amount0(), -delta.amount1());
+        return abi.encode(delta.amount0(), delta.amount1());
     }
 
-    function _handleCollect(CallbackData memory data) internal returns (bytes memory) {
+    function _handleCollect(CallbackData memory data, bool shouldSettle) internal returns (bytes memory) {
         CollectParams memory params = abi.decode(data.params, (CollectParams));
+        // check for modifyLiquidities
+        if (params.amount0Max == 0 && params.amount1Max == 0) {
+            revert InvalidMaxCollectAmount();
+        }
+        params.recipient = params.recipient == address(0) ? address(msg.sender) : params.recipient;
+        // TODO: add isAuthorizedForToken check for modifyLiquidities
         Position storage nftPosition = _positions[params.tokenId];
         Position memory nftPositionCache = _positions[params.tokenId];
         PoolId poolId = nftPositionCache.poolId;
+        bytes32 salt = nftPositionCache.salt;
         PoolKey memory poolKey = _poolIdToPoolKey[poolId];
 
         uint128 tokensOwed0 = nftPositionCache.tokensOwed0;
         uint128 tokensOwed1 = nftPositionCache.tokensOwed1;
 
         if (nftPositionCache.liquidity > 0) {
-            resetAccumulatedFee(poolKey, nftPositionCache.tickLower, nftPositionCache.tickUpper);
+            mintAccumulatedPositionFee(poolKey, nftPositionCache.tickLower, nftPositionCache.tickUpper, salt);
 
-            CLPosition.Info memory poolManagerPositionInfo =
-                poolManager.getPosition(poolId, address(this), nftPositionCache.tickLower, nftPositionCache.tickUpper);
+            CLPosition.Info memory poolManagerPositionInfo = poolManager.getPosition(
+                poolId, address(this), nftPositionCache.tickLower, nftPositionCache.tickUpper, salt
+            );
 
             /// @dev This can be overflow in following cases:
             /// 1. feeGrowthInside0LastX128 is overflow
@@ -446,10 +513,25 @@ contract NonfungiblePositionManager is
         );
 
         // cash out from vault
-        burnAndTake(poolKey.currency0, params.recipient, amount0Collect);
-        burnAndTake(poolKey.currency1, params.recipient, amount1Collect);
+        burnAndTake(poolKey.currency0, params.recipient, amount0Collect, shouldSettle);
+        burnAndTake(poolKey.currency1, params.recipient, amount1Collect, shouldSettle);
 
         return abi.encode(amount0Collect, amount1Collect);
+    }
+
+    /// @param params is an encoding of the Currency to close
+    /// @param sender is the msg.sender encoded by the `modifyLiquidities` function before the `lockAcquired`.
+    /// @return an encoding of int256 the balance of the currency being settled by this call
+    function _close(bytes memory params, address sender) internal returns (bytes memory) {
+        (Currency currency) = abi.decode(params, (Currency));
+        // this address has applied all deltas on behalf of the user/owner
+        // it is safe to close this entire delta because of slippage checks throughout the batched calls.
+        int256 currencyDelta = vault.currencyDelta(address(this), currency);
+
+        settleOrTake(currency, sender, int128(currencyDelta));
+        //TODO: add refund logic for the remaining native currency
+
+        return abi.encode(currencyDelta);
     }
 
     function tokenURI(uint256 tokenId) public view override(ERC721, IERC721Metadata) returns (string memory) {

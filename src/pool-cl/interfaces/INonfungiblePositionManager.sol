@@ -11,16 +11,20 @@ import {IERC721Metadata} from "@openzeppelin/contracts/token/ERC721/extensions/I
 import {IERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
 import {IERC721Permit} from "./IERC721Permit.sol";
 import {ICLPeripheryImmutableState} from "./ICLPeripheryImmutableState.sol";
+import {IPeripheryPayments} from "../../interfaces/IPeripheryPayments.sol";
+import {IMulticall} from "../../interfaces/IMulticall.sol";
 
 /// @title Non-fungible token for positions
 /// @notice Wraps PancakeSwap V4 positions in a non-fungible token interface which allows for them to be transferred
 /// and authorized.
 interface INonfungiblePositionManager is
+    IPeripheryPayments,
     ILockCallback,
     ICLPeripheryImmutableState,
     IERC721Metadata,
     IERC721Enumerable,
-    IERC721Permit
+    IERC721Permit,
+    IMulticall
 {
     error NotOwnerOrOperator();
     error InvalidLiquidityDecreaseAmount();
@@ -37,7 +41,9 @@ interface INonfungiblePositionManager is
         Mint,
         IncreaseLiquidity,
         DecreaseLiquidity,
-        Collect
+        Collect,
+        BatchModifyLiquidity,
+        CloseCurrency
     }
 
     struct CallbackData {
@@ -87,6 +93,7 @@ interface INonfungiblePositionManager is
         // how many uncollected tokens are owed to the position, as of the last computation
         uint128 tokensOwed0;
         uint128 tokensOwed1;
+        bytes32 salt;
     }
 
     /// @notice Returns the position information associated with a given token ID.
@@ -96,6 +103,7 @@ interface INonfungiblePositionManager is
         returns (
             uint96 nonce,
             address operator,
+            PoolId poolId,
             Currency currency0,
             Currency currency1,
             uint24 fee,
@@ -105,7 +113,8 @@ interface INonfungiblePositionManager is
             uint256 feeGrowthInside0LastX128,
             uint256 feeGrowthInside1LastX128,
             uint128 tokensOwed0,
-            uint128 tokensOwed1
+            uint128 tokensOwed1,
+            bytes32 salt
         );
 
     /// @notice Initialize the pool state for a given pool ID.
@@ -123,6 +132,7 @@ interface INonfungiblePositionManager is
         PoolKey poolKey;
         int24 tickLower;
         int24 tickUpper;
+        bytes32 salt;
         uint256 amount0Desired;
         uint256 amount1Desired;
         uint256 amount0Min;
@@ -130,6 +140,12 @@ interface INonfungiblePositionManager is
         address recipient;
         uint256 deadline;
     }
+
+    /// @notice Batches many liquidity modification calls to pool manager
+    /// @param payload is an encoding of actions, and parameters for those actions
+    /// @param deadline is the deadline for the batched actions to be executed
+    /// @return returnData is the endocing of each actions return information
+    function modifyLiquidities(bytes calldata payload, uint256 deadline) external payable returns (bytes[] memory);
 
     /// @notice Creates a new position wrapped in a NFT
     /// @dev Call this when the pool does exist and is initialized. Note that if the pool is created but not initialized

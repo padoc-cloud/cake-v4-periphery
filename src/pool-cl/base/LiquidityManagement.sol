@@ -26,6 +26,7 @@ abstract contract LiquidityManagement is CLPeripheryImmutableState, PeripheryPay
         PoolKey poolKey;
         int24 tickLower;
         int24 tickUpper;
+        bytes32 salt;
         uint256 amount0Desired;
         uint256 amount1Desired;
         uint256 amount0Min;
@@ -39,32 +40,39 @@ abstract contract LiquidityManagement is CLPeripheryImmutableState, PeripheryPay
         uint128 liquidity;
         uint256 amount0Min;
         uint256 amount1Min;
+        bytes32 salt;
     }
 
-    /// @dev Since in v4 `modifyLiquidity` accumulated fee are claimed and
-    // resynced by default, which can mixup with user's actual settlement
-    // for update liquidity, we claim the fee before further action to avoid this.
-    function resetAccumulatedFee(PoolKey memory poolKey, int24 tickLower, int24 tickUpper) internal {
+    /// @notice Claim accumulated fees from the position and mint them to the NFP contract
+    function mintAccumulatedPositionFee(PoolKey memory poolKey, int24 tickLower, int24 tickUpper, bytes32 salt)
+        internal
+    {
         CLPosition.Info memory poolManagerPositionInfo =
-            poolManager.getPosition(poolKey.toId(), address(this), tickLower, tickUpper);
+            poolManager.getPosition(poolKey.toId(), address(this), tickLower, tickUpper, salt);
 
         if (poolManagerPositionInfo.liquidity > 0) {
-            BalanceDelta delta =
-                poolManager.modifyLiquidity(poolKey, ICLPoolManager.ModifyLiquidityParams(tickLower, tickUpper, 0), "");
+            (, BalanceDelta feeDelta) = poolManager.modifyLiquidity(
+                poolKey, ICLPoolManager.ModifyLiquidityParams(tickLower, tickUpper, 0, salt), ""
+            );
 
-            if (delta.amount0() < 0) {
-                vault.mint(address(this), poolKey.currency0, uint256(int256(-delta.amount0())));
-            }
-
-            if (delta.amount1() < 0) {
-                vault.mint(address(this), poolKey.currency1, uint256(int256(-delta.amount1())));
-            }
+            mintFeeDelta(poolKey, feeDelta);
         }
     }
 
-    function addLiquidity(AddLiquidityParams memory params) internal returns (uint128 liquidity, BalanceDelta delta) {
-        resetAccumulatedFee(params.poolKey, params.tickLower, params.tickUpper);
+    /// @dev Mint accumulated fee to the contract so user can perform collect() at a later stage
+    function mintFeeDelta(PoolKey memory poolKey, BalanceDelta feeDelta) internal {
+        if (feeDelta.amount0() > 0) {
+            vault.mint(address(this), poolKey.currency0, uint256(int256(feeDelta.amount0())));
+        }
 
+        if (feeDelta.amount1() > 0) {
+            vault.mint(address(this), poolKey.currency1, uint256(int256(feeDelta.amount1())));
+        }
+    }
+
+    /// @return liquidity The amount of liquidity added to the position
+    /// @return delta The amount of token0 and token1 from liquidity additional. Does not include the fee accumulated in the position.
+    function addLiquidity(AddLiquidityParams memory params) internal returns (uint128 liquidity, BalanceDelta delta) {
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(params.poolKey.toId());
         uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(params.tickLower);
         uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(params.tickUpper);
@@ -72,31 +80,20 @@ abstract contract LiquidityManagement is CLPeripheryImmutableState, PeripheryPay
             sqrtPriceX96, sqrtRatioAX96, sqrtRatioBX96, params.amount0Desired, params.amount1Desired
         );
 
-        delta = poolManager.modifyLiquidity(
+        BalanceDelta feeDelta;
+        (delta, feeDelta) = poolManager.modifyLiquidity(
             params.poolKey,
-            ICLPoolManager.ModifyLiquidityParams(params.tickLower, params.tickUpper, int256(uint256(liquidity))),
+            ICLPoolManager.ModifyLiquidityParams(
+                params.tickLower, params.tickUpper, int256(uint256(liquidity)), params.salt
+            ),
             ""
         );
 
-        /// @dev amount0 & amount1 cant be negative here since LPing has been claimed
-        if (
-            uint256(uint128(delta.amount0())) < params.amount0Min
-                || uint256(uint128(delta.amount1())) < params.amount1Min
-        ) {
-            revert PriceSlippageCheckFailed();
-        }
-    }
+        /// @dev `delta` return value of modifyLiquidity is inclusive of fee. Mint the `feeDelta` to nfp contract so subtract from `delta`
+        delta = delta - feeDelta;
+        mintFeeDelta(params.poolKey, feeDelta);
 
-    function removeLiquidity(RemoveLiquidityParams memory params) internal returns (BalanceDelta delta) {
-        resetAccumulatedFee(params.poolKey, params.tickLower, params.tickUpper);
-
-        delta = poolManager.modifyLiquidity(
-            params.poolKey,
-            ICLPoolManager.ModifyLiquidityParams(params.tickLower, params.tickUpper, -int256(uint256(params.liquidity))),
-            ""
-        );
-
-        /// @dev amount0 & amount1 must be negative here since LPing has been claimed
+        /// @dev amount0 & amount1 cant be positive here since LPing has been claimed
         if (
             uint256(uint128(-delta.amount0())) < params.amount0Min
                 || uint256(uint128(-delta.amount1())) < params.amount1Min
@@ -105,23 +102,53 @@ abstract contract LiquidityManagement is CLPeripheryImmutableState, PeripheryPay
         }
     }
 
-    function burnAndTake(Currency currency, address to, uint256 amount) internal {
+    /// @return delta The amount of token0 and token1 from liquidity removal. Does not include the fee accumulated in the position.
+    function removeLiquidity(RemoveLiquidityParams memory params) internal returns (BalanceDelta delta) {
+        BalanceDelta feeDelta;
+        (delta, feeDelta) = poolManager.modifyLiquidity(
+            params.poolKey,
+            ICLPoolManager.ModifyLiquidityParams(
+                params.tickLower, params.tickUpper, -int256(uint256(params.liquidity)), params.salt
+            ),
+            ""
+        );
+
+        /// @dev `delta` return value of modifyLiquidity is inclusive of fee. Mint the `feeDelta` to nfp contract so subtract from `delta`
+        delta = delta - feeDelta;
+        mintFeeDelta(params.poolKey, feeDelta);
+
+        /// @dev amount0 & amount1 must be positive here since LPing has been claimed
+        if (
+            uint256(uint128(delta.amount0())) < params.amount0Min
+                || uint256(uint128(delta.amount1())) < params.amount1Min
+        ) {
+            revert PriceSlippageCheckFailed();
+        }
+    }
+
+    function burnAndTake(Currency currency, address to, uint256 amount, bool shouldSettle) internal {
         vault.burn(address(this), currency, amount);
-        vault.take(currency, to, amount);
+        if (shouldSettle) {
+            vault.take(currency, to, amount);
+        }
     }
 
     function settleDeltas(address sender, PoolKey memory poolKey, BalanceDelta delta) internal {
-        if (delta.amount0() > 0) {
-            pay(poolKey.currency0, sender, address(vault), uint256(int256(delta.amount0())));
-            vault.settleAndMintRefund(poolKey.currency0, sender);
-        } else if (delta.amount0() < 0) {
-            vault.take(poolKey.currency0, sender, uint128(-delta.amount0()));
-        }
-        if (delta.amount1() > 0) {
-            pay(poolKey.currency1, sender, address(vault), uint256(int256(delta.amount1())));
-            vault.settleAndMintRefund(poolKey.currency1, sender);
-        } else if (delta.amount1() < 0) {
-            vault.take(poolKey.currency1, sender, uint128(-delta.amount1()));
+        settleOrTake(poolKey.currency0, sender, delta.amount0());
+        settleOrTake(poolKey.currency1, sender, delta.amount1());
+    }
+
+    function settleOrTake(Currency currency, address sender, int128 amount) internal {
+        if (amount > 0) {
+            vault.take(currency, sender, uint128(amount));
+        } else if (amount < 0) {
+            if (currency.isNative()) {
+                vault.settle{value: uint256(int256(-amount))}(currency);
+            } else {
+                vault.sync(currency);
+                pay(currency, sender, address(vault), uint256(int256(-amount)));
+                vault.settle(currency);
+            }
         }
     }
 }

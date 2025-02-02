@@ -29,6 +29,7 @@ import {ISwapRouterBase} from "../../src/interfaces/ISwapRouterBase.sol";
 import {SwapRouterBase} from "../../src/SwapRouterBase.sol";
 import {PeripheryPayments} from "../../src/base/PeripheryPayments.sol";
 import {PeripheryValidation} from "../../src/base/PeripheryValidation.sol";
+import {PathKey} from "../../src/libraries/PathKey.sol";
 
 contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
     using BinPoolParametersHelper for bytes32;
@@ -58,7 +59,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         weth = new WETH();
         vault = new Vault();
         poolManager = new BinPoolManager(IVault(address(vault)), 500000);
-        vault.registerPoolManager(address(poolManager));
+        vault.registerApp(address(poolManager));
         router = new BinSwapRouter(vault, poolManager, address(weth));
 
         binFungiblePositionManager =
@@ -189,6 +190,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         );
         snapEnd();
 
+        assertEq(amountOut, 997000000000000000);
         assertEq(alice.balance, 0 ether);
         assertEq(token0.balanceOf(alice), amountOut);
     }
@@ -244,6 +246,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         );
         snapEnd();
 
+        assertEq(amountOut, 997000000000000000);
         assertEq(alice.balance, amountOut);
         assertEq(token0.balanceOf(alice), 0 ether);
     }
@@ -251,7 +254,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
     function testExactInputSingle_EthPool_InsufficientETH() public {
         vm.deal(alice, 1 ether);
 
-        vm.expectRevert(CurrencyLibrary.NativeTransferFailed.selector);
+        vm.expectRevert(); // OutOfFund
         router.exactInputSingle{value: 0.5 ether}(
             IBinSwapRouterBase.V4BinExactInputSingleParams({
                 poolKey: key3,
@@ -298,6 +301,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         );
         snapEnd();
 
+        assertEq(amountOut, 997000000000000000);
         if (swapForY) {
             assertEq(token0.balanceOf(alice), 0 ether);
             assertEq(token1.balanceOf(alice), amountOut);
@@ -374,8 +378,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         vm.startPrank(alice);
         token0.mint(alice, 1 ether);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](1);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](1);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token1)),
             fee: key.fee,
             hooks: key.hooks,
@@ -401,8 +405,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         vm.startPrank(alice);
         token0.mint(alice, 1 ether);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token1)),
             fee: key.fee,
             hooks: key.hooks,
@@ -410,7 +414,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
             poolManager: key.poolManager,
             parameters: key.parameters
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: Currency.wrap(address(token2)),
             fee: key2.fee,
             hooks: key2.hooks,
@@ -443,8 +447,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         token0.mint(alice, 1 ether);
         vm.warp(1000); // set block.timestamp
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](1);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](1);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token1)),
             fee: key.fee,
             hooks: key.hooks,
@@ -470,8 +474,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         vm.startPrank(alice);
         token0.mint(alice, 1 ether);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](1);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](1);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token1)),
             fee: key.fee,
             hooks: key.hooks,
@@ -525,6 +529,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         );
         snapEnd();
 
+        assertEq(amountIn, 501504513540621866);
         if (swapForY) {
             assertEq(token0.balanceOf(alice), 1 ether - amountIn);
             assertEq(token1.balanceOf(alice), 0.5 ether);
@@ -580,7 +585,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
     function testExactOutputSingle_AmountInMax() public {
         vm.startPrank(alice);
 
-        token0.mint(alice, 1 ether);
+        // Give alice > amountInMax so TooMuchRequestedError instead of TransferFromFailed
+        token0.mint(alice, 2 ether);
 
         vm.expectRevert(abi.encodeWithSelector(ISwapRouterBase.TooMuchRequested.selector));
         router.exactOutputSingle(
@@ -606,8 +612,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         vm.startPrank(alice);
         token0.mint(alice, 1 ether);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](1);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](1);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token0)),
             fee: key.fee,
             hooks: key.hooks,
@@ -644,8 +650,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         vm.startPrank(alice);
         token0.mint(alice, 1 ether);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token0)),
             fee: key.fee,
             hooks: key.hooks,
@@ -653,7 +659,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
             poolManager: key.poolManager,
             parameters: key.parameters
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: Currency.wrap(address(token1)),
             fee: key2.fee,
             hooks: key2.hooks,
@@ -693,7 +699,7 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         token0.mint(alice, 1 ether);
         vm.warp(1000); // set block.timestamp
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](0);
+        PathKey[] memory path = new PathKey[](0);
         vm.expectRevert(abi.encodeWithSelector(PeripheryValidation.TransactionTooOld.selector));
         router.exactOutput(
             IBinSwapRouterBase.V4BinExactOutputParams({
@@ -711,8 +717,8 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         vm.startPrank(alice);
         token0.mint(alice, 2 ether);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](1);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](1);
+        path[0] = PathKey({
             intermediateCurrency: Currency.wrap(address(token0)),
             fee: key.fee,
             hooks: key.hooks,
@@ -764,46 +770,5 @@ contract BinSwapRouterTest is Test, GasSnapshot, LiquidityParamsHelper {
         assertEq(alice.balance, 1 ether);
         assertEq(address(router).balance, 0 ether);
         assertEq(token0.balanceOf(alice), abi.decode(result[0], (uint256)));
-    }
-
-    function testSettleAndMintRefund() public {
-        // transfer excess token to vault
-        uint256 excessTokenAmount = 1 ether;
-        address hacker = address(1);
-        token0.mint(hacker, excessTokenAmount);
-        vm.startPrank(hacker);
-        token0.transfer(address(vault), excessTokenAmount);
-        vm.stopPrank();
-
-        vm.startPrank(alice);
-        token0.mint(alice, 1 ether);
-
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](1);
-        path[0] = ISwapRouterBase.PathKey({
-            intermediateCurrency: Currency.wrap(address(token1)),
-            fee: key.fee,
-            hooks: key.hooks,
-            hookData: new bytes(0),
-            poolManager: key.poolManager,
-            parameters: key.parameters
-        });
-
-        uint256 amountOut = router.exactInput(
-            IBinSwapRouterBase.V4BinExactInputParams({
-                currencyIn: Currency.wrap(address(token0)),
-                path: path,
-                recipient: alice,
-                amountIn: 1 ether,
-                amountOutMinimum: 0
-            }),
-            block.timestamp + 60
-        );
-        assertEq(token1.balanceOf(alice), amountOut);
-
-        // check currency balance in vault
-        {
-            uint256 currency0Balance = vault.balanceOf(alice, Currency.wrap(address(token0)));
-            assertEq(currency0Balance, excessTokenAmount, "Unexpected currency0 balance in vault");
-        }
     }
 }

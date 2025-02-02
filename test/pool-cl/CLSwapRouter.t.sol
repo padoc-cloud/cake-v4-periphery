@@ -25,6 +25,7 @@ import {ICLSwapRouter} from "../../src/pool-cl/interfaces/ICLSwapRouter.sol";
 import {ICLSwapRouterBase} from "../../src/pool-cl/interfaces/ICLSwapRouterBase.sol";
 import {ISwapRouterBase} from "../../src/interfaces/ISwapRouterBase.sol";
 import {PeripheryValidation} from "../../src/base/PeripheryValidation.sol";
+import {PathKey} from "../../src/libraries/PathKey.sol";
 
 contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
     using PoolIdLibrary for PoolKey;
@@ -42,7 +43,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
         WETH weth = new WETH();
         vault = new Vault();
         poolManager = new CLPoolManager(vault, 3000);
-        vault.registerPoolManager(address(poolManager));
+        vault.registerApp(address(poolManager));
 
         initializeTokens();
         vm.label(Currency.unwrap(currency0), "token0");
@@ -75,7 +76,12 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
 
         positionManager.modifyPosition(
             poolKey0,
-            ICLPoolManager.ModifyLiquidityParams({tickLower: 46053, tickUpper: 46055, liquidityDelta: 1e4 ether}),
+            ICLPoolManager.ModifyLiquidityParams({
+                tickLower: 46053,
+                tickUpper: 46055,
+                liquidityDelta: 1e4 ether,
+                salt: bytes32(0)
+            }),
             new bytes(0)
         );
 
@@ -95,7 +101,12 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
 
         positionManager.modifyPosition(
             poolKey1,
-            ICLPoolManager.ModifyLiquidityParams({tickLower: -5, tickUpper: 5, liquidityDelta: 1e5 ether}),
+            ICLPoolManager.ModifyLiquidityParams({
+                tickLower: -5,
+                tickUpper: 5,
+                liquidityDelta: 1e5 ether,
+                salt: bytes32(0)
+            }),
             new bytes(0)
         );
 
@@ -117,7 +128,12 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
 
         positionManager.modifyPosition{value: 25 ether}(
             poolKey2,
-            ICLPoolManager.ModifyLiquidityParams({tickLower: -5, tickUpper: 5, liquidityDelta: 1e5 ether}),
+            ICLPoolManager.ModifyLiquidityParams({
+                tickLower: -5,
+                tickUpper: 5,
+                liquidityDelta: 1e5 ether,
+                salt: bytes32(0)
+            }),
             new bytes(0)
         );
 
@@ -296,8 +312,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
     }
 
     function testExactInput() external {
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -305,7 +321,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency2,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -335,8 +351,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
         uint256 deadline = block.timestamp + 100;
         vm.expectRevert(abi.encodeWithSelector(PeripheryValidation.TransactionTooOld.selector));
         skip(200);
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -344,7 +360,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency2,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -367,8 +383,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
 
     function testExactInput_amountOutLessThanExpected() external {
         vm.expectRevert(ISwapRouterBase.TooLittleReceived.selector);
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -376,7 +392,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency2,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -397,9 +413,9 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
         );
     }
 
-    function testExactInput_gas() external {
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+    function testExactInput_gasX() external {
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -407,7 +423,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency2,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -552,8 +568,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
     function testExactOutput() external {
         uint256 balanceBefore = IERC20(Currency.unwrap(currency0)).balanceOf(address(this));
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency0,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -561,7 +577,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -593,8 +609,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
         uint256 deadline = block.timestamp + 100;
         vm.expectRevert(abi.encodeWithSelector(PeripheryValidation.TransactionTooOld.selector));
         skip(200);
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency0,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -602,7 +618,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -626,8 +642,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
     function testExactOutput_amountInMoreThanExpected() external {
         vm.expectRevert(ISwapRouterBase.TooMuchRequested.selector);
 
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency0,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -635,7 +651,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -658,8 +674,8 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
 
     function testExactOutput_gas() external {
         snapStart("CLSwapRouterTest#ExactOutput");
-        ISwapRouterBase.PathKey[] memory path = new ISwapRouterBase.PathKey[](2);
-        path[0] = ISwapRouterBase.PathKey({
+        PathKey[] memory path = new PathKey[](2);
+        path[0] = PathKey({
             intermediateCurrency: currency0,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -667,7 +683,7 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             poolManager: poolManager,
             parameters: bytes32(uint256(0x10000))
         });
-        path[1] = ISwapRouterBase.PathKey({
+        path[1] = PathKey({
             intermediateCurrency: currency1,
             fee: uint24(3000),
             hooks: IHooks(address(0)),
@@ -687,40 +703,6 @@ contract CLSwapRouterTest is TokenFixture, Test, GasSnapshot {
             block.timestamp + 100
         );
         snapEnd();
-    }
-
-    function testSettleAndMintRefund() external {
-        // transfer excess token to vault
-        uint256 excessTokenAmount = 1 ether;
-        address hacker = address(1);
-        MockERC20(Currency.unwrap(currency0)).mint(hacker, excessTokenAmount);
-        vm.startPrank(hacker);
-        MockERC20(Currency.unwrap(currency0)).transfer(address(vault), excessTokenAmount);
-        vm.stopPrank();
-
-        uint256 amountOut = router.exactInputSingle(
-            ICLSwapRouterBase.V4CLExactInputSingleParams({
-                poolKey: poolKey0,
-                zeroForOne: true,
-                recipient: makeAddr("recipient"),
-                amountIn: 0.01 ether,
-                amountOutMinimum: 0,
-                sqrtPriceLimitX96: 0,
-                hookData: new bytes(0)
-            }),
-            block.timestamp + 100
-        );
-
-        uint256 received = IERC20(Currency.unwrap(currency1)).balanceOf(makeAddr("recipient"));
-        assertEq(received, amountOut);
-        // considering slippage and fee, tolerance is 1%
-        assertApproxEqAbs(amountOut, 1 ether, amountOut / 100);
-
-        // check currency balance in vault
-        {
-            uint256 currency0Balance = vault.balanceOf(address(this), currency0);
-            assertEq(currency0Balance, excessTokenAmount, "Unexpected currency0 balance in vault");
-        }
     }
 
     // allow refund of ETH
